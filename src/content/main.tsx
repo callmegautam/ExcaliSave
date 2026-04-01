@@ -15,7 +15,6 @@ function mount() {
   host.style.top = "12px";
   host.style.right = "12px";
   host.style.zIndex = "2147483646";
-  host.style.fontFamily = 'system-ui, "Segoe UI", sans-serif';
 
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
