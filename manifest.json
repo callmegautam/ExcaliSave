@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "ExcaliSave",
+  "version": "0.0.1",
+  "description": "Save and restore Excalidraw canvases from localStorage on excalidraw.com",
+  "content_scripts": [
+    {
+      "matches": ["https://excalidraw.com/*"],
+      "js": ["src/content/main.tsx"],
+      "run_at": "document_idle"
+    }
+  ]
+}

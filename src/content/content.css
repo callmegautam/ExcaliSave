@@ -1,0 +1,293 @@
+.excali-root {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.excali-fab {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  background: transparent;
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.12);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.excali-fab:hover {
+  transform: scale(1.05);
+  box-shadow:
+    0 6px 20px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.excali-fab:active {
+  transform: scale(0.97);
+}
+
+.excali-fab-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.excali-panel {
+  width: 280px;
+  max-height: min(420px, calc(100vh - 88px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.excali-panel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.excali-header {
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: #cba6f7;
+}
+
+.excali-close {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  color: #a6adc8;
+  background: transparent;
+  transition: background 0.15s, color 0.15s;
+}
+
+.excali-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #cdd6f4;
+}
+
+.excali-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.excali-btn-block {
+  width: 100%;
+  flex: none;
+}
+
+.excali-btn {
+  flex: 1;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    background 0.15s,
+    transform 0.08s;
+}
+
+.excali-btn:active {
+  transform: scale(0.98);
+}
+
+.excali-btn-new {
+  background: #45475a;
+  color: #f5e0dc;
+}
+
+.excali-btn-new:hover {
+  background: #585b70;
+}
+
+.excali-btn-save {
+  background: #89b4fa;
+  color: #11111b;
+}
+
+.excali-btn-save:hover {
+  background: #b4befe;
+}
+
+.excali-save-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.excali-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #a6adc8;
+}
+
+.excali-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #181825;
+  color: #cdd6f4;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.excali-input::placeholder {
+  color: #6c7086;
+}
+
+.excali-input:focus {
+  border-color: #89b4fa;
+}
+
+.excali-btn-save-full {
+  width: 100%;
+  flex: none;
+}
+
+.excali-error {
+  margin: 0;
+  font-size: 12px;
+  color: #f38ba8;
+}
+
+.excali-list-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.excali-list-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #a6adc8;
+  margin-bottom: 6px;
+}
+
+.excali-list {
+  overflow-y: auto;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 2px;
+}
+
+.excali-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.excali-list::-webkit-scrollbar-thumb {
+  background: #45475a;
+  border-radius: 4px;
+}
+
+.excali-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px;
+  border-radius: 8px;
+  background: #313244;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.excali-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.excali-row-title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f5c2e7;
+}
+
+.excali-row-meta {
+  font-size: 11px;
+  color: #6c7086;
+  margin-top: 2px;
+}
+
+.excali-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.excali-btn-sm {
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.excali-btn-restore {
+  background: #a6e3a1;
+  color: #11111b;
+}
+
+.excali-btn-restore:hover {
+  background: #b8f2b3;
+}
+
+.excali-btn-delete {
+  background: transparent;
+  color: #f38ba8;
+  border: 1px solid rgba(243, 139, 168, 0.35);
+}
+
+.excali-btn-delete:hover {
+  background: rgba(243, 139, 168, 0.12);
+}
+
+.excali-empty {
+  font-size: 12px;
+  color: #6c7086;
+  padding: 8px 4px;
+  text-align: center;
+}
+
+.excali-hint {
+  font-size: 11px;
+  color: #6c7086;
+  line-height: 1.35;
+}
