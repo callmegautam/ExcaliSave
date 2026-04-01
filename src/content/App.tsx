@@ -1,11 +1,22 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   addSnapshot,
   clearExcalidrawCanvas,
+  getActiveSnapshot,
   getExcalidrawRaw,
   listSnapshots,
   removeSnapshot,
   restoreSnapshot,
+  setActiveSnapshotId,
+  updateSnapshot,
   type Snapshot,
 } from "../lib/storage";
 
@@ -39,6 +50,11 @@ export function App() {
   );
   const [saveName, setSaveName] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const activeSnapshot = useMemo(
+    () => getActiveSnapshot(),
+    [snapshots],
+  );
 
   const refresh = useCallback(() => {
     setSnapshots(listSnapshots());
@@ -79,7 +95,34 @@ export function App() {
     window.location.reload();
   }, []);
 
-  const handleSave = useCallback(() => {
+  const handleSaveUpdate = useCallback(() => {
+    const raw = getExcalidrawRaw();
+    if (raw === null || raw === "") {
+      setSaveError("Nothing to save: canvas storage is empty.");
+      return;
+    }
+    const active = getActiveSnapshot();
+    if (!active) {
+      setSaveError("No file is linked. Use Save as to create one.");
+      return;
+    }
+    setSaveError(null);
+    const name = saveName.trim();
+    const ok = updateSnapshot(
+      active.id,
+      raw,
+      name !== "" ? name : undefined,
+    );
+    if (!ok) {
+      setSaveError("Could not update: that file no longer exists.");
+      refresh();
+      return;
+    }
+    setSaveName("");
+    refresh();
+  }, [refresh, saveName]);
+
+  const handleSaveAs = useCallback(() => {
     const raw = getExcalidrawRaw();
     if (raw === null || raw === "") {
       setSaveError("Nothing to save: canvas storage is empty.");
@@ -94,6 +137,7 @@ export function App() {
   }, [refresh, saveName]);
 
   const handleRestore = useCallback((snap: Snapshot) => {
+    setActiveSnapshotId(snap.id);
     restoreSnapshot(snap.data);
     window.location.reload();
   }, []);
@@ -104,6 +148,15 @@ export function App() {
       refresh();
     },
     [refresh],
+  );
+
+  const onSaveNameKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== "Enter") return;
+      if (activeSnapshot) handleSaveUpdate();
+      else handleSaveAs();
+    },
+    [activeSnapshot, handleSaveAs, handleSaveUpdate],
   );
 
   const rows = useMemo(
@@ -202,44 +255,79 @@ export function App() {
               New
             </button>
           </div>
+          <div className="rounded-lg bg-[#181825] px-2 py-1.5 text-[11px] leading-snug text-[#a6adc8]">
+            {activeSnapshot ? (
+              <>
+                Linked:{" "}
+                <span className="font-medium text-[#f5c2e7]">
+                  {activeSnapshot.label}
+                </span>
+                . Save updates this entry; Save as creates a new one.
+              </>
+            ) : (
+              <>
+                No file linked.{" "}
+                <span className="text-[#cdd6f4]">Save as</span> creates a file
+                and links it; then{" "}
+                <span className="text-[#cdd6f4]">Save</span> updates it.
+              </>
+            )}
+          </div>
           <div className="flex flex-col gap-1.5">
             <label
               className="text-[11px] font-normal uppercase tracking-wider text-[#a6adc8]"
               htmlFor={saveNameFieldId}
             >
-              Save name
+              {activeSnapshot ? "Name (optional)" : "Save name"}
             </label>
             <input
               ref={saveNameInputRef}
               id={saveNameFieldId}
               className="box-border w-full rounded-lg border border-white/10 bg-[#181825] px-2.5 py-2 text-[13px] text-[#cdd6f4] outline-none transition-colors placeholder:text-[#6c7086] focus:border-[#89b4fa]"
               type="text"
-              placeholder={defaultSaveLabel()}
+              placeholder={
+                activeSnapshot
+                  ? `Keep “${activeSnapshot.label}” or type a new name`
+                  : defaultSaveLabel()
+              }
               value={saveName}
               onChange={(e) => {
                 setSaveName(e.target.value);
                 setSaveError(null);
               }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSave();
-              }}
+              onKeyDown={onSaveNameKeyDown}
               autoComplete="off"
             />
-            <button
-              type="button"
-              className="w-full cursor-pointer rounded-lg border-0 bg-[#89b4fa] px-2.5 py-2 text-[13px] font-semibold text-[#11111b] transition-all hover:bg-[#b4befe] active:scale-[0.98]"
-              onClick={handleSave}
-            >
-              Save
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={!activeSnapshot}
+                title={
+                  !activeSnapshot
+                    ? "Link a file with Restore or Save as first"
+                    : `Update “${activeSnapshot.label}”`
+                }
+                className="flex-1 cursor-pointer rounded-lg border-0 bg-[#89b4fa] px-2.5 py-2 text-[13px] font-semibold text-[#11111b] transition-all hover:bg-[#b4befe] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#89b4fa]"
+                onClick={handleSaveUpdate}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className="flex-1 cursor-pointer rounded-lg border border-white/15 bg-[#313244] px-2.5 py-2 text-[13px] font-semibold text-[#cdd6f4] transition-all hover:bg-[#45475a] active:scale-[0.98]"
+                onClick={handleSaveAs}
+              >
+                Save as
+              </button>
+            </div>
             {saveError && (
               <p className="m-0 text-xs text-[#f38ba8]">{saveError}</p>
             )}
           </div>
           <p className="text-[11px] leading-[1.35] text-[#6c7086]">
-            New clears <code className="rounded bg-black/25 px-1 font-mono text-[10px]">excalidraw</code> and reloads. Snapshots live in{" "}
+            New clears <code className="rounded bg-black/25 px-1 font-mono text-[10px]">excalidraw</code> and the active link. Snapshots + link use{" "}
             <code className="rounded bg-black/25 px-1 font-mono text-[10px]">
-              excaliSave_snapshots
+              excaliSave_*
             </code>
             .
           </p>
