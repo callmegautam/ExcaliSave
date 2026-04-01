@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate-icons": "cd public && magick logo.jpeg -resize 16x16 -strip icon16.png && magick logo.jpeg -resize 32x32 -strip icon32.png && magick logo.jpeg -resize 48x48 -strip icon48.png && magick logo.jpeg -resize 128x128 -strip icon128.png"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",

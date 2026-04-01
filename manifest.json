@@ -3,6 +3,21 @@
   "name": "ExcaliSave",
   "version": "0.0.1",
   "description": "Save and restore Excalidraw canvases from localStorage on excalidraw.com",
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_title": "ExcaliSave",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["https://excalidraw.com/*"],
