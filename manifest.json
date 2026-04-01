@@ -2,7 +2,8 @@
   "manifest_version": 3,
   "name": "ExcaliSave",
   "version": "0.0.1",
-  "description": "Save and restore Excalidraw canvases from localStorage on excalidraw.com",
+  "description": "Save and restore Excalidraw canvases from localStorage on excalidraw.com. By Gautam Suthar.",
+  "homepage_url": "https://github.com/callmegautam/ExcaliSave",
   "icons": {
     "16": "icon16.png",
     "32": "icon32.png",

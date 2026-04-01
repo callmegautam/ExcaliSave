@@ -2,6 +2,16 @@
   "name": "excali-save",
   "private": true,
   "version": "0.0.1",
+  "description": "Chrome extension for excalidraw.com: save and restore canvas snapshots from localStorage.",
+  "author": {
+    "name": "Gautam Suthar",
+    "email": "iamgautamsuthar@outlook.com",
+    "url": "https://github.com/callmegautam"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/callmegautam/ExcaliSave.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
