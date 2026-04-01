@@ -9,7 +9,7 @@ Chrome extension for [excalidraw.com](https://excalidraw.com/): save named snaps
 ## Screenshots
 
 <p align="center">
-  <img src="docs/image.png" alt="ExcaliSave floating panel on excalidraw.com" width="720" style="max-width: 100%; height: auto;" />
+  <img src="docs/image.png" alt="ExcaliSave floating panel on excalidraw.com" width="420" />
 </p>
 
 ---
