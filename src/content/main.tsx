@@ -11,10 +11,6 @@ function mount() {
   const host = document.createElement("div");
   host.id = HOST_ID;
   host.setAttribute("data-excali-save", "");
-  host.style.position = "fixed";
-  host.style.top = "12px";
-  host.style.right = "12px";
-  host.style.zIndex = "2147483646";
 
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");

@@ -2,11 +2,14 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
+import { GITHUB_REPO_URL } from "../constants";
 import {
   addSnapshot,
   clearExcalidrawCanvas,
@@ -19,6 +22,10 @@ import {
   updateSnapshot,
   type Snapshot,
 } from "../lib/storage";
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
 
 function formatWhen(ts: number): string {
   try {
@@ -36,7 +43,22 @@ function defaultSaveLabel(): string {
 }
 
 const listScroll =
-  "overflow-y-auto max-h-[260px] flex flex-col gap-1.5 pr-0.5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded [&::-webkit-scrollbar-thumb]:bg-[#45475a]";
+  "overflow-y-auto max-h-[min(420px,55vh)] flex flex-col gap-1.5 pr-0.5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded [&::-webkit-scrollbar-thumb]:bg-[#45475a]";
+
+function GitHubIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="currentColor"
+      aria-hidden
+    >
+      <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
+    </svg>
+  );
+}
 
 export function App() {
   const panelId = useId();
@@ -44,6 +66,7 @@ export function App() {
   const fabGradId = useId().replace(/:/g, "");
   const hostRef = useRef<HTMLDivElement | null>(null);
   const saveNameInputRef = useRef<HTMLInputElement | null>(null);
+  const [pos, setPos] = useState({ right: 12, top: 12 });
   const [open, setOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<Snapshot[]>(() =>
     listSnapshots(),
@@ -56,9 +79,53 @@ export function App() {
     [snapshots],
   );
 
+  useLayoutEffect(() => {
+    const root = hostRef.current?.getRootNode();
+    if (root instanceof ShadowRoot) {
+      const h = root.host as HTMLElement;
+      h.style.position = "fixed";
+      h.style.right = `${pos.right}px`;
+      h.style.top = `${pos.top}px`;
+      h.style.left = "auto";
+      h.style.bottom = "auto";
+      h.style.zIndex = "2147483646";
+    }
+  }, [pos]);
+
   const refresh = useCallback(() => {
     setSnapshots(listSnapshots());
   }, []);
+
+  const startDrag = useCallback(
+    (e: ReactPointerEvent, opts?: { onClickIfStill?: () => void }) => {
+      if (e.button !== 0) return;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startRight = pos.right;
+      const startTop = pos.top;
+      let moved = false;
+
+      const onMove = (ev: PointerEvent) => {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 5) {
+          moved = true;
+        }
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        setPos({
+          right: clamp(startRight - (ev.clientX - startX), 0, w - 8),
+          top: clamp(startTop + (ev.clientY - startY), 0, h - 8),
+        });
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        if (!moved && opts?.onClickIfStill) opts.onClickIfStill();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [pos.right, pos.top],
+  );
 
   useEffect(() => {
     const el = hostRef.current?.getRootNode();
@@ -200,11 +267,13 @@ export function App() {
     >
       <button
         type="button"
-        className="size-12 shrink-0 cursor-pointer rounded-full border-0 bg-transparent p-0 shadow-[0_4px_16px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.12)] transition-all duration-150 ease-out hover:scale-105 hover:shadow-[0_6px_20px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.18)] active:scale-[0.97]"
-        onClick={() => setOpen((v) => !v)}
+        className="size-12 shrink-0 cursor-grab touch-none select-none rounded-full border-0 bg-transparent p-0 shadow-[0_4px_16px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.12)] transition-all duration-150 ease-out hover:scale-105 hover:shadow-[0_6px_20px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.18)] active:cursor-grabbing active:scale-[0.97]"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        title={open ? "Hide ExcaliSave" : "ExcaliSave"}
+        title="Drag to move · Click to open or close"
+        onPointerDown={(e) =>
+          startDrag(e, { onClickIfStill: () => setOpen((v) => !v) })
+        }
       >
         <span
           className="flex size-full items-center justify-center overflow-hidden rounded-full"
@@ -228,23 +297,43 @@ export function App() {
       </button>
       {open && (
         <div
-          className="flex w-[280px] max-h-[min(420px,calc(100vh-88px))] flex-col gap-2.5 rounded-[10px] bg-[#1e1e2e] p-3 text-[#cdd6f4] shadow-[0_4px_24px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.06)]"
+          className="flex w-[280px] max-h-[min(520px,calc(100vh-24px))] flex-col gap-2.5 rounded-[10px] bg-[#1e1e2e] p-3 text-[#cdd6f4] shadow-[0_4px_24px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.06)]"
           id={panelId}
           role="region"
           aria-label="ExcaliSave"
         >
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-sm font-semibold tracking-wide text-[#cba6f7]">
+          <div
+            className="flex cursor-grab touch-none select-none items-center justify-between gap-2 rounded-lg px-0 py-0.5 active:cursor-grabbing"
+            onPointerDown={(e) => {
+              if ((e.target as HTMLElement).closest("a, button")) return;
+              startDrag(e);
+            }}
+          >
+            <div className="min-w-0 flex-1 text-sm font-semibold tracking-wide text-[#cba6f7]">
               ExcaliSave
             </div>
-            <button
-              type="button"
-              className="size-8 shrink-0 cursor-pointer rounded-lg border-0 bg-transparent p-0 text-[22px] leading-none text-[#a6adc8] transition-colors hover:bg-white/10 hover:text-[#cdd6f4]"
-              onClick={() => setOpen(false)}
-              aria-label="Close"
-            >
-              ×
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              <a
+                href={GITHUB_REPO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex size-8 items-center justify-center rounded-lg text-[#a6adc8] transition-colors hover:bg-white/10 hover:text-[#cdd6f4]"
+                title="View on GitHub"
+                aria-label="View ExcaliSave on GitHub"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <GitHubIcon />
+              </a>
+              <button
+                type="button"
+                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg border-0 bg-transparent p-0 text-[22px] leading-none text-[#a6adc8] transition-colors hover:bg-white/10 hover:text-[#cdd6f4]"
+                onClick={() => setOpen(false)}
+                aria-label="Close"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                ×
+              </button>
+            </div>
           </div>
           <div className="flex gap-2">
             <button
@@ -324,14 +413,7 @@ export function App() {
               <p className="m-0 text-xs text-[#f38ba8]">{saveError}</p>
             )}
           </div>
-          <p className="text-[11px] leading-[1.35] text-[#6c7086]">
-            New clears <code className="rounded bg-black/25 px-1 font-mono text-[10px]">excalidraw</code> and the active link. Snapshots + link use{" "}
-            <code className="rounded bg-black/25 px-1 font-mono text-[10px]">
-              excaliSave_*
-            </code>
-            .
-          </p>
-          <div className="flex min-h-0 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <div className="mb-1.5 text-[11px] uppercase tracking-wider text-[#a6adc8]">
               Saved
             </div>
