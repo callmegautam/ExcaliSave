@@ -12,6 +12,13 @@ function mount() {
   host.id = HOST_ID;
   host.setAttribute("data-excali-save", "");
 
+  // Events from inside the shadow root reach Excalidraw retargeted to this host,
+  // so it cannot tell they came from a text field and would run its shortcuts
+  // (Backspace deletes shapes, letters switch tools, paste lands on the canvas).
+  for (const type of ["keydown", "keyup", "keypress", "paste", "copy", "cut"]) {
+    host.addEventListener(type, (e) => e.stopPropagation());
+  }
+
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = contentStyles;
