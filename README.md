@@ -18,6 +18,10 @@ There are plenty of drawing tools, but Excalidraw is the one I keep coming back 
 
 - Floating launcher on excalidraw.com that opens a small, draggable panel
 - **New**, **Save** (update the linked file) and **Save as** (create a new one)
+- **Ctrl+S** (Cmd+S on Mac) saves the linked file without opening the panel
+- Unsaved-changes dot on the launcher and a **Saved / Unsaved** marker next to the linked file
+- Optional **autosave** of the linked file every 2, 5 or 10 minutes
+- Thumbnail preview of every save, plus **search** and **sort** (recent, created, name)
 - Restore any save; theme, zoom, background and grid come back with it
 - Pasted images are saved with the snapshot and restored correctly
 - Warns before **New** or **Restore** would throw away unsaved changes
@@ -68,9 +72,19 @@ Excalidraw keeps the current scene in the page's `localStorage` and pasted image
 | `unlimitedStorage` | Drawings with images easily pass Chrome's default 10 MB quota       |
 | `excalidraw.com`   | The panel only runs on excalidraw.com, nowhere else                 |
 
+## Keyboard
+
+| Shortcut         | Action                                                        |
+| ---------------- | ------------------------------------------------------------- |
+| Ctrl+S / Cmd+S   | Save the linked file; with no linked file, opens the panel to name it |
+| Enter            | In the name field: Save if a file is linked, otherwise Save as |
+| Esc              | Close the panel                                               |
+
+ExcaliSave takes over Ctrl+S on excalidraw.com. Excalidraw's own "save to disk" is still in its main menu.
+
 ## Roadmap
 
-- **v0.2:** search and sort, thumbnails, unsaved-changes marker, Ctrl+S to save, optional autosave
+- **Next:** Chrome Web Store listing
 - **Later:** sync through your own Google Drive or a GitHub gist, folders or tags, version history per file, Firefox build
 
 See the [changelog](CHANGELOG.md) for what shipped in each release.
