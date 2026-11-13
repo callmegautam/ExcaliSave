@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "license": "MIT",
-  "description": "Chrome extension for excalidraw.com: save and restore canvas snapshots from localStorage.",
+  "description": "Chrome extension for excalidraw.com: save, restore and update named canvas snapshots, images included.",
   "author": {
     "name": "Gautam Suthar",
     "email": "iamgautamsuthar@outlook.com",
