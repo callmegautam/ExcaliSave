@@ -6,9 +6,12 @@ import {
   type BinaryFile,
   type CanvasData,
 } from "./excalidraw";
+import { renderThumbnail } from "./thumbnail";
 
 const KEY_INDEX = "index";
+const KEY_PREFS = "prefs";
 const dataKey = (id: string) => `snap:${id}`;
+const thumbKey = (id: string) => `thumb:${id}`;
 
 export const EXPORT_FORMAT = "excalisave-backup";
 export const EXPORT_VERSION = 1;
@@ -91,6 +94,15 @@ function metaFor(
   };
 }
 
+async function thumbnailEntry(id: string, data: CanvasData): Promise<Record<string, string>> {
+  try {
+    const thumb = await renderThumbnail(data);
+    return thumb ? { [thumbKey(id)]: thumb } : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function listSnapshots(): Promise<SnapshotMeta[]> {
   try {
     return await readIndex();
@@ -118,8 +130,9 @@ export async function createSnapshot(
     data,
   );
   try {
+    const thumb = await thumbnailEntry(meta.id, data);
     const index = await readIndex();
-    await chrome.storage.local.set({ [dataKey(meta.id)]: data });
+    await chrome.storage.local.set({ [dataKey(meta.id)]: data, ...thumb });
     await chrome.storage.local.set({ [KEY_INDEX]: [meta, ...index] });
     return meta;
   } catch (err) {
@@ -144,11 +157,26 @@ export async function updateSnapshot(
     );
     const next = [...index];
     next[i] = meta;
-    await chrome.storage.local.set({ [dataKey(id)]: data, [KEY_INDEX]: next });
+    const thumb = await thumbnailEntry(id, data);
+    await chrome.storage.local.set({ [dataKey(id)]: data, ...thumb, [KEY_INDEX]: next });
     return meta;
   } catch (err) {
     throw friendly(err, "save");
   }
+}
+
+/**
+ * Excalidraw normalizes a scene when it loads it (fills defaults, migrates old
+ * fields). Recording the normalized fingerprint keeps a just-restored canvas
+ * from showing up as changed.
+ */
+export async function rebaselineFingerprint(id: string, fp: string): Promise<void> {
+  const index = await readIndex();
+  const i = index.findIndex((s) => s.id === id);
+  if (i === -1 || index[i].fingerprint === fp) return;
+  const next = [...index];
+  next[i] = { ...index[i], fingerprint: fp };
+  await chrome.storage.local.set({ [KEY_INDEX]: next });
 }
 
 export type DeletedSnapshot = {
@@ -167,7 +195,7 @@ export async function deleteSnapshot(id: string): Promise<DeletedSnapshot | null
     await chrome.storage.local.set({
       [KEY_INDEX]: index.filter((s) => s.id !== id),
     });
-    await chrome.storage.local.remove(dataKey(id));
+    await chrome.storage.local.remove([dataKey(id), thumbKey(id)]);
     return { meta, data, position };
   } catch (err) {
     throw friendly(err, "delete");
@@ -345,6 +373,77 @@ export async function migrateLegacySnapshots(): Promise<number> {
   } catch (err) {
     throw friendly(err, "move old saves to extension storage");
   }
+}
+
+/** Thumbnails for the given saves, rendering and storing any that are missing. */
+export async function loadThumbnails(
+  ids: string[],
+  onRendered?: (id: string, thumb: string) => void,
+): Promise<Record<string, string>> {
+  if (ids.length === 0) return {};
+  const stored = await chrome.storage.local.get(ids.map(thumbKey));
+  const thumbs: Record<string, string> = {};
+  const missing: string[] = [];
+  for (const id of ids) {
+    const t = stored[thumbKey(id)];
+    if (typeof t === "string") thumbs[id] = t;
+    else missing.push(id);
+  }
+  void (async () => {
+    for (const id of missing) {
+      try {
+        const data = await getSnapshotData(id);
+        if (!data) continue;
+        const entry = await thumbnailEntry(id, data);
+        if (!entry[thumbKey(id)]) continue;
+        await chrome.storage.local.set(entry);
+        onRendered?.(id, entry[thumbKey(id)]);
+      } catch {
+        /* a missing thumbnail is cosmetic */
+      }
+    }
+  })();
+  return thumbs;
+}
+
+export type SortOrder = "updated" | "created" | "name";
+export const AUTOSAVE_CHOICES = [0, 2, 5, 10] as const;
+export type AutosaveMinutes = (typeof AUTOSAVE_CHOICES)[number];
+
+export type Prefs = { sort: SortOrder; autosaveMinutes: AutosaveMinutes };
+
+export const DEFAULT_PREFS: Prefs = { sort: "updated", autosaveMinutes: 0 };
+
+export async function getPrefs(): Promise<Prefs> {
+  try {
+    const raw = await get<Partial<Prefs>>(KEY_PREFS);
+    const sort: SortOrder =
+      raw?.sort === "created" || raw?.sort === "name" ? raw.sort : DEFAULT_PREFS.sort;
+    const autosaveMinutes = AUTOSAVE_CHOICES.find((m) => m === raw?.autosaveMinutes) ?? 0;
+    return { sort, autosaveMinutes };
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
+
+export async function setPrefs(prefs: Prefs): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [KEY_PREFS]: prefs });
+  } catch (err) {
+    throw friendly(err, "save settings");
+  }
+}
+
+export function sortSnapshots(list: SnapshotMeta[], order: SortOrder): SnapshotMeta[] {
+  const sorted = [...list];
+  if (order === "name") {
+    sorted.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }));
+  } else if (order === "created") {
+    sorted.sort((a, b) => b.createdAt - a.createdAt);
+  } else {
+    sorted.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+  return sorted;
 }
 
 export function onSnapshotsChanged(cb: () => void): () => void {
