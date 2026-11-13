@@ -2,8 +2,12 @@
   "manifest_version": 3,
   "name": "ExcaliSave",
   "version": "0.0.1",
-  "description": "Save and restore Excalidraw canvases from localStorage on excalidraw.com. By Gautam Suthar.",
+  "description": "Save, restore and update named Excalidraw canvases, images included. Stored in your browser, no account, no server.",
   "homepage_url": "https://github.com/callmegautam/ExcaliSave",
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
   "icons": {
     "16": "icon16.png",
     "32": "icon32.png",
@@ -21,8 +25,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://excalidraw.com/*"],
-      "js": ["src/content/main.tsx"],
+      "matches": [
+        "https://excalidraw.com/*"
+      ],
+      "js": [
+        "src/content/main.tsx"
+      ],
       "run_at": "document_idle"
     }
   ]

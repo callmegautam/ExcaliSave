@@ -1,28 +1,298 @@
-export const LS_KEY_EXCALIDRAW = "excalidraw";
-export const LS_KEY_SNAPSHOTS = "excaliSave_snapshots";
-/** Which snapshot the current canvas is tied to (restore / last save as / last update). Cleared on New. */
-export const LS_KEY_ACTIVE_SNAPSHOT = "excaliSave_activeSnapshotId";
+import {
+  fingerprint,
+  readLegacySnapshotsRaw,
+  referencedFileIds,
+  removeLegacySnapshots,
+  type BinaryFile,
+  type CanvasData,
+} from "./excalidraw";
 
-export type Snapshot = {
+const KEY_INDEX = "index";
+const dataKey = (id: string) => `snap:${id}`;
+
+export const EXPORT_FORMAT = "excalisave-backup";
+export const EXPORT_VERSION = 1;
+
+export type SnapshotMeta = {
   id: string;
   label: string;
   createdAt: number;
-  /** Raw string from localStorage `excalidraw` */
-  data: string;
+  updatedAt: number;
+  fingerprint: string;
+  imageCount: number;
 };
 
-function parseSnapshots(raw: string | null): Snapshot[] {
-  if (!raw) return [];
+export type ExportedSnapshot = SnapshotMeta & CanvasData;
+
+export type ExportFile = {
+  format: typeof EXPORT_FORMAT;
+  version: number;
+  exportedAt: number;
+  snapshots: ExportedSnapshot[];
+};
+
+export class StorageError extends Error {}
+
+function friendly(err: unknown, action: string): StorageError {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/context invalidated/i.test(msg)) {
+    return new StorageError(
+      "ExcaliSave was updated or reloaded. Refresh this page and try again.",
+    );
+  }
+  if (/quota/i.test(msg)) {
+    return new StorageError(`Could not ${action}: browser storage is full.`);
+  }
+  return new StorageError(`Could not ${action}: ${msg}`);
+}
+
+async function get<T>(key: string): Promise<T | undefined> {
+  const res = await chrome.storage.local.get(key);
+  return res[key] as T | undefined;
+}
+
+function isMeta(x: unknown): x is SnapshotMeta {
+  if (x === null || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    typeof o.label === "string" &&
+    typeof o.createdAt === "number" &&
+    typeof o.updatedAt === "number" &&
+    typeof o.fingerprint === "string" &&
+    typeof o.imageCount === "number"
+  );
+}
+
+function isCanvasData(x: unknown): x is CanvasData {
+  if (x === null || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
+  return (
+    typeof o.elements === "string" &&
+    (o.appState === null || typeof o.appState === "string") &&
+    o.files !== null &&
+    typeof o.files === "object"
+  );
+}
+
+async function readIndex(): Promise<SnapshotMeta[]> {
+  const raw = await get<unknown>(KEY_INDEX);
+  return Array.isArray(raw) ? raw.filter(isMeta) : [];
+}
+
+function metaFor(
+  base: Pick<SnapshotMeta, "id" | "label" | "createdAt" | "updatedAt">,
+  data: CanvasData,
+): SnapshotMeta {
+  return {
+    ...base,
+    fingerprint: fingerprint(data.elements),
+    imageCount: Object.keys(data.files).length,
+  };
+}
+
+export async function listSnapshots(): Promise<SnapshotMeta[]> {
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isSnapshot);
-  } catch {
-    return [];
+    return await readIndex();
+  } catch (err) {
+    throw friendly(err, "load saves");
   }
 }
 
-function isSnapshot(x: unknown): x is Snapshot {
+export async function getSnapshotData(id: string): Promise<CanvasData | null> {
+  try {
+    const data = await get<unknown>(dataKey(id));
+    return isCanvasData(data) ? data : null;
+  } catch (err) {
+    throw friendly(err, "read the save");
+  }
+}
+
+export async function createSnapshot(
+  label: string,
+  data: CanvasData,
+): Promise<SnapshotMeta> {
+  const now = Date.now();
+  const meta = metaFor(
+    { id: crypto.randomUUID(), label, createdAt: now, updatedAt: now },
+    data,
+  );
+  try {
+    const index = await readIndex();
+    await chrome.storage.local.set({ [dataKey(meta.id)]: data });
+    await chrome.storage.local.set({ [KEY_INDEX]: [meta, ...index] });
+    return meta;
+  } catch (err) {
+    throw friendly(err, "save");
+  }
+}
+
+export async function updateSnapshot(
+  id: string,
+  data: CanvasData,
+  label?: string,
+): Promise<SnapshotMeta | null> {
+  try {
+    const index = await readIndex();
+    const i = index.findIndex((s) => s.id === id);
+    if (i === -1) return null;
+    const prev = index[i];
+    const nextLabel = label?.trim() ? label.trim() : prev.label;
+    const meta = metaFor(
+      { id, label: nextLabel, createdAt: prev.createdAt, updatedAt: Date.now() },
+      data,
+    );
+    const next = [...index];
+    next[i] = meta;
+    await chrome.storage.local.set({ [dataKey(id)]: data, [KEY_INDEX]: next });
+    return meta;
+  } catch (err) {
+    throw friendly(err, "save");
+  }
+}
+
+export type DeletedSnapshot = {
+  meta: SnapshotMeta;
+  data: CanvasData | null;
+  position: number;
+};
+
+export async function deleteSnapshot(id: string): Promise<DeletedSnapshot | null> {
+  try {
+    const index = await readIndex();
+    const position = index.findIndex((s) => s.id === id);
+    if (position === -1) return null;
+    const meta = index[position];
+    const data = await getSnapshotData(id);
+    await chrome.storage.local.set({
+      [KEY_INDEX]: index.filter((s) => s.id !== id),
+    });
+    await chrome.storage.local.remove(dataKey(id));
+    return { meta, data, position };
+  } catch (err) {
+    throw friendly(err, "delete");
+  }
+}
+
+export async function restoreDeleted(deleted: DeletedSnapshot): Promise<void> {
+  if (!deleted.data) return;
+  try {
+    const index = await readIndex();
+    if (index.some((s) => s.id === deleted.meta.id)) return;
+    const next = [...index];
+    next.splice(Math.min(deleted.position, next.length), 0, deleted.meta);
+    await chrome.storage.local.set({ [dataKey(deleted.meta.id)]: deleted.data });
+    await chrome.storage.local.set({ [KEY_INDEX]: next });
+  } catch (err) {
+    throw friendly(err, "undo the delete");
+  }
+}
+
+export async function exportAll(): Promise<ExportFile> {
+  try {
+    const index = await readIndex();
+    const snapshots: ExportedSnapshot[] = [];
+    for (const meta of index) {
+      const data = await getSnapshotData(meta.id);
+      if (data) snapshots.push({ ...meta, ...data });
+    }
+    return {
+      format: EXPORT_FORMAT,
+      version: EXPORT_VERSION,
+      exportedAt: Date.now(),
+      snapshots,
+    };
+  } catch (err) {
+    throw friendly(err, "export");
+  }
+}
+
+function toCanvasData(s: Record<string, unknown>): CanvasData | null {
+  const candidate = {
+    elements: s.elements,
+    appState: s.appState ?? null,
+    files: s.files ?? {},
+  };
+  return isCanvasData(candidate)
+    ? {
+        elements: candidate.elements,
+        appState: candidate.appState,
+        files: candidate.files as Record<string, BinaryFile>,
+      }
+    : null;
+}
+
+export type ImportResult = { added: number; skipped: number };
+
+/** Adds snapshots from a backup file. Saves that already exist (same id) are kept as they are. */
+export async function importAll(text: string): Promise<ImportResult> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new StorageError("That file is not valid JSON.");
+  }
+  const file = parsed as Partial<ExportFile> | null;
+  if (
+    !file ||
+    file.format !== EXPORT_FORMAT ||
+    typeof file.version !== "number" ||
+    !Array.isArray(file.snapshots)
+  ) {
+    throw new StorageError("That file is not an ExcaliSave backup.");
+  }
+  if (file.version > EXPORT_VERSION) {
+    throw new StorageError(
+      "That backup was made by a newer ExcaliSave. Update the extension first.",
+    );
+  }
+
+  try {
+    const index = await readIndex();
+    const known = new Set(index.map((s) => s.id));
+    const added: SnapshotMeta[] = [];
+    const writes: Record<string, CanvasData> = {};
+    let skipped = 0;
+
+    for (const raw of file.snapshots as unknown[]) {
+      if (raw === null || typeof raw !== "object") {
+        skipped++;
+        continue;
+      }
+      const s = raw as Record<string, unknown>;
+      const data = toCanvasData(s);
+      if (!data || typeof s.id !== "string" || known.has(s.id)) {
+        skipped++;
+        continue;
+      }
+      const createdAt = typeof s.createdAt === "number" ? s.createdAt : Date.now();
+      const meta = metaFor(
+        {
+          id: s.id,
+          label: typeof s.label === "string" && s.label.trim() ? s.label : "Imported",
+          createdAt,
+          updatedAt: typeof s.updatedAt === "number" ? s.updatedAt : createdAt,
+        },
+        data,
+      );
+      known.add(meta.id);
+      added.push(meta);
+      writes[dataKey(meta.id)] = data;
+    }
+
+    if (added.length > 0) {
+      await chrome.storage.local.set(writes);
+      await chrome.storage.local.set({ [KEY_INDEX]: [...added, ...index] });
+    }
+    return { added: added.length, skipped };
+  } catch (err) {
+    throw friendly(err, "import");
+  }
+}
+
+type LegacySnapshot = { id: string; label: string; createdAt: number; data: string };
+
+function isLegacy(x: unknown): x is LegacySnapshot {
   if (x === null || typeof x !== "object") return false;
   const o = x as Record<string, unknown>;
   return (
@@ -33,102 +303,61 @@ function isSnapshot(x: unknown): x is Snapshot {
   );
 }
 
-export function getExcalidrawRaw(): string | null {
+/**
+ * v0.0.1 kept snapshots in excalidraw.com's localStorage, which shares a ~5 MB
+ * quota with Excalidraw and is wiped with site data. Move them into extension
+ * storage once, then free the old key.
+ */
+export async function migrateLegacySnapshots(): Promise<number> {
   try {
-    return window.localStorage.getItem(LS_KEY_EXCALIDRAW);
-  } catch {
-    return null;
-  }
-}
-
-export function clearExcalidrawCanvas(): void {
-  try {
-    window.localStorage.removeItem(LS_KEY_EXCALIDRAW);
-    window.localStorage.removeItem(LS_KEY_ACTIVE_SNAPSHOT);
-  } catch {
-    /* ignore */
-  }
-}
-
-export function listSnapshots(): Snapshot[] {
-  try {
-    return parseSnapshots(window.localStorage.getItem(LS_KEY_SNAPSHOTS));
-  } catch {
-    return [];
-  }
-}
-
-function writeSnapshots(snapshots: Snapshot[]): void {
-  window.localStorage.setItem(LS_KEY_SNAPSHOTS, JSON.stringify(snapshots));
-}
-
-export function getActiveSnapshotId(): string | null {
-  try {
-    return window.localStorage.getItem(LS_KEY_ACTIVE_SNAPSHOT);
-  } catch {
-    return null;
-  }
-}
-
-export function setActiveSnapshotId(id: string | null): void {
-  try {
-    if (id === null) {
-      window.localStorage.removeItem(LS_KEY_ACTIVE_SNAPSHOT);
-    } else {
-      window.localStorage.setItem(LS_KEY_ACTIVE_SNAPSHOT, id);
+    const raw = readLegacySnapshotsRaw();
+    if (raw === null) return 0;
+    let legacy: LegacySnapshot[] = [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) legacy = parsed.filter(isLegacy);
+    } catch {
+      legacy = [];
     }
-  } catch {
-    /* ignore */
+
+    const index = await readIndex();
+    const known = new Set(index.map((s) => s.id));
+    const migrated: SnapshotMeta[] = [];
+    const writes: Record<string, CanvasData> = {};
+    for (const s of legacy) {
+      if (known.has(s.id)) continue;
+      const data: CanvasData = { elements: s.data, appState: null, files: {} };
+      migrated.push(
+        metaFor(
+          { id: s.id, label: s.label, createdAt: s.createdAt, updatedAt: s.createdAt },
+          data,
+        ),
+      );
+      writes[dataKey(s.id)] = data;
+    }
+
+    if (migrated.length > 0) {
+      await chrome.storage.local.set(writes);
+      await chrome.storage.local.set({ [KEY_INDEX]: [...index, ...migrated] });
+    }
+    removeLegacySnapshots();
+    return migrated.length;
+  } catch (err) {
+    throw friendly(err, "move old saves to extension storage");
   }
 }
 
-/** Resolves the active snapshot or clears a stale id. */
-export function getActiveSnapshot(): Snapshot | null {
-  const id = getActiveSnapshotId();
-  if (!id) return null;
-  const s = listSnapshots().find((x) => x.id === id) ?? null;
-  if (!s) setActiveSnapshotId(null);
-  return s;
-}
-
-export function addSnapshot(label: string, data: string): Snapshot {
-  const snapshots = listSnapshots();
-  const snap: Snapshot = {
-    id: crypto.randomUUID(),
-    label,
-    createdAt: Date.now(),
-    data,
+export function onSnapshotsChanged(cb: () => void): () => void {
+  const listener = (
+    changes: Record<string, chrome.storage.StorageChange>,
+    area: string,
+  ) => {
+    if (area === "local" && KEY_INDEX in changes) cb();
   };
-  snapshots.unshift(snap);
-  writeSnapshots(snapshots);
-  setActiveSnapshotId(snap.id);
-  return snap;
+  chrome.storage.onChanged.addListener(listener);
+  return () => chrome.storage.onChanged.removeListener(listener);
 }
 
-export function updateSnapshot(
-  id: string,
-  data: string,
-  label?: string,
-): boolean {
-  const snapshots = listSnapshots();
-  const i = snapshots.findIndex((s) => s.id === id);
-  if (i === -1) return false;
-  const prev = snapshots[i];
-  const nextLabel =
-    label !== undefined && label.trim() !== "" ? label.trim() : prev.label;
-  snapshots[i] = { ...prev, data, label: nextLabel };
-  writeSnapshots(snapshots);
-  return true;
-}
-
-export function removeSnapshot(id: string): void {
-  const next = listSnapshots().filter((s) => s.id !== id);
-  writeSnapshots(next);
-  if (getActiveSnapshotId() === id) {
-    setActiveSnapshotId(null);
-  }
-}
-
-export function restoreSnapshot(data: string): void {
-  window.localStorage.setItem(LS_KEY_EXCALIDRAW, data);
+export function countMissingImages(data: CanvasData): number {
+  return referencedFileIds(data.elements).filter((id) => !(id in data.files)).length;
 }
