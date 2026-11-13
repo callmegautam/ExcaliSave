@@ -14,28 +14,51 @@ import { GITHUB_REPO_URL } from "../constants";
 import {
   clearCanvas,
   currentFingerprint,
+  fingerprint,
   getActiveSnapshotId,
+  markRestored,
   readCanvas,
+  readElementsRaw,
   setActiveSnapshotId,
+  takeRestoredMark,
   writeCanvas,
 } from "../lib/excalidraw";
 import {
   countMissingImages,
   createSnapshot,
   deleteSnapshot,
+  AUTOSAVE_CHOICES,
+  DEFAULT_PREFS,
   exportAll,
+  getPrefs,
   getSnapshotData,
   importAll,
   listSnapshots,
+  loadThumbnails,
   migrateLegacySnapshots,
   onSnapshotsChanged,
+  rebaselineFingerprint,
   restoreDeleted,
+  setPrefs,
+  sortSnapshots,
   updateSnapshot,
+  type AutosaveMinutes,
   type DeletedSnapshot,
+  type Prefs,
   type SnapshotMeta,
+  type SortOrder,
 } from "../lib/storage";
 
 const UNDO_MS = 8000;
+const FLASH_MS = 2500;
+const WATCH_MS = 1000;
+const SHORTCUT_LABEL = /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd+S" : "Ctrl+S";
+
+type SaveResult =
+  | { kind: "ok"; meta: SnapshotMeta; missing: number }
+  | { kind: "empty" }
+  | { kind: "gone" };
+type Flash = { text: string; tone: "ok" | "error" };
 
 type Confirm = { message: string; confirmLabel: string; run: () => void };
 type Undo = { deleted: DeletedSnapshot; wasActive: boolean };
@@ -73,6 +96,10 @@ function formatWhen(ts: number): string {
   } catch {
     return String(ts);
   }
+}
+
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString(undefined, { timeStyle: "short" });
 }
 
 function defaultSaveLabel(): string {
@@ -118,6 +145,16 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [undo, setUndo] = useState<Undo | null>(null);
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const [query, setQuery] = useState("");
+  const [prefs, setPrefsState] = useState<Prefs>(DEFAULT_PREFS);
+  const [canvasFp, setCanvasFp] = useState(() => currentFingerprint());
+  const [flash, setFlash] = useState<Flash | null>(null);
+  const [lastAutosave, setLastAutosave] = useState<number | null>(null);
+  const flashTimerRef = useRef<number | undefined>(undefined);
+  const busyRef = useRef(false);
+  const openRef = useRef(open);
+  openRef.current = open;
 
   const activeSnapshot = useMemo(
     () => snapshots.find((s) => s.id === activeId) ?? null,
@@ -158,19 +195,103 @@ export function App() {
     };
   }, [refresh]);
 
-  useEffect(() => () => window.clearTimeout(undoTimerRef.current), []);
+  useEffect(
+    () => () => {
+      window.clearTimeout(undoTimerRef.current);
+      window.clearTimeout(flashTimerRef.current);
+    },
+    [],
+  );
 
-  const run = useCallback(async (task: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await task();
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBusy(false);
-    }
+  useEffect(() => {
+    void getPrefs().then(setPrefsState);
+  }, []);
+
+  useEffect(() => {
+    const restoredId = takeRestoredMark();
+    if (!restoredId) return;
+    // Excalidraw rewrites the scene right after loading it; adopt that version
+    // as the saved state. Give up after a few seconds so later edits never count.
+    const initial = readElementsRaw();
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      const raw = readElementsRaw();
+      const changed = raw !== initial;
+      if (!changed && Date.now() - started < 3000) return;
+      window.clearInterval(timer);
+      if (changed && getActiveSnapshotId() === restoredId) {
+        rebaselineFingerprint(restoredId, fingerprint(raw)).catch(() => undefined);
+      }
+    }, 150);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let lastRaw: string | null | undefined;
+    const tick = () => {
+      const raw = readElementsRaw();
+      if (raw === lastRaw) return;
+      lastRaw = raw;
+      setCanvasFp(fingerprint(raw));
+    };
+    const timer = window.setInterval(tick, WATCH_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadThumbnails(
+      snapshots.map((s) => s.id),
+      (id, thumb) => !cancelled && setThumbs((prev) => ({ ...prev, [id]: thumb })),
+    )
+      .then((stored) => !cancelled && setThumbs((prev) => ({ ...prev, ...stored })))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshots]);
+
+  const showFlash = useCallback((text: string, tone: Flash["tone"] = "ok") => {
+    window.clearTimeout(flashTimerRef.current);
+    setFlash({ text, tone });
+    flashTimerRef.current = window.setTimeout(() => setFlash(null), FLASH_MS);
+  }, []);
+
+  const report = useCallback(
+    (text: string) => {
+      if (openRef.current) setNotice(text);
+      else showFlash(text);
+    },
+    [showFlash],
+  );
+
+  const run = useCallback(
+    async (task: () => Promise<void>) => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      setBusy(true);
+      setError(null);
+      setNotice(null);
+      try {
+        await task();
+      } catch (err) {
+        const text = errorText(err);
+        setError(text);
+        if (!openRef.current) showFlash(text, "error");
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [showFlash],
+  );
+
+  const updatePrefs = useCallback((patch: Partial<Prefs>) => {
+    setPrefsState((prev) => {
+      const next = { ...prev, ...patch };
+      setPrefs(next).catch((err) => setError(errorText(err)));
+      return next;
+    });
   }, []);
 
   const hasUnsavedChanges = useCallback((): boolean => {
@@ -284,29 +405,40 @@ export function App() {
       ? `Saved "${label}", but ${plural(missing, "image")} were not ready yet. Save again in a moment.`
       : `Saved "${label}".`;
 
+  const saveLinked = useCallback(
+    async (snap: SnapshotMeta, label?: string): Promise<SaveResult> => {
+      const data = await readCanvas();
+      if (!data) return { kind: "empty" };
+      const meta = await updateSnapshot(snap.id, data, label);
+      if (!meta) {
+        linkActive(null);
+        await refresh();
+        return { kind: "gone" };
+      }
+      await refresh();
+      setCanvasFp(meta.fingerprint);
+      return { kind: "ok", meta, missing: countMissingImages(data) };
+    },
+    [linkActive, refresh],
+  );
+
   const handleSaveUpdate = useCallback(() => {
     void run(async () => {
       if (!activeSnapshot) {
         setError("No file is linked. Use Save as to create one.");
         return;
       }
-      const data = await readCanvas();
-      if (!data) {
+      const result = await saveLinked(activeSnapshot, saveName);
+      if (result.kind === "empty") {
         setError("Nothing to save: the canvas is empty.");
-        return;
-      }
-      const meta = await updateSnapshot(activeSnapshot.id, data, saveName);
-      if (!meta) {
+      } else if (result.kind === "gone") {
         setError("Could not save: that file no longer exists.");
-        linkActive(null);
-        await refresh();
-        return;
+      } else {
+        setSaveName("");
+        report(savedNotice(result.meta.label, result.missing));
       }
-      setSaveName("");
-      await refresh();
-      setNotice(savedNotice(meta.label, countMissingImages(data)));
     });
-  }, [activeSnapshot, linkActive, refresh, run, saveName]);
+  }, [activeSnapshot, report, run, saveLinked, saveName]);
 
   const handleSaveAs = useCallback(() => {
     void run(async () => {
@@ -319,9 +451,71 @@ export function App() {
       setSaveName("");
       await refresh();
       linkActive(meta.id);
+      setCanvasFp(meta.fingerprint);
       setNotice(savedNotice(meta.label, countMissingImages(data)));
     });
   }, [linkActive, refresh, run, saveName]);
+
+  const shortcutRef = useRef<() => void>(() => undefined);
+  shortcutRef.current = () => {
+    if (busyRef.current) return;
+    if (!activeSnapshot) {
+      setOpen(true);
+      setNotice("Name this canvas and press Enter to save it.");
+      return;
+    }
+    handleSaveUpdate();
+  };
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "s") return;
+      // Capture on window runs before Excalidraw's own Ctrl+S (save to disk).
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      shortcutRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
+  const autosaveRef = useRef<() => void>(() => undefined);
+  autosaveRef.current = () => {
+    if (busyRef.current || !activeSnapshot || !hasUnsavedChanges()) return;
+    busyRef.current = true;
+    setBusy(true);
+    saveLinked(activeSnapshot)
+      .then((result) => {
+        if (result.kind === "ok") setLastAutosave(Date.now());
+      })
+      .catch((err) => {
+        const text = `Autosave failed. ${errorText(err)}`;
+        setError(text);
+        if (!openRef.current) showFlash(text, "error");
+      })
+      .finally(() => {
+        busyRef.current = false;
+        setBusy(false);
+      });
+  };
+
+  useEffect(() => {
+    if (prefs.autosaveMinutes === 0) return;
+    const timer = window.setInterval(
+      () => autosaveRef.current(),
+      prefs.autosaveMinutes * 60_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [prefs.autosaveMinutes]);
+
+  const isDirty = activeSnapshot !== null && canvasFp !== activeSnapshot.fingerprint;
+
+  const visibleSnapshots = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const sorted = sortSnapshots(snapshots, prefs.sort);
+    return q ? sorted.filter((s) => s.label.toLowerCase().includes(q)) : sorted;
+  }, [snapshots, prefs.sort, query]);
 
   const handleRestore = useCallback(
     (snap: SnapshotMeta) => {
@@ -334,6 +528,7 @@ export function App() {
           }
           await writeCanvas(data);
           linkActive(snap.id);
+          markRestored(snap.id);
           window.location.reload();
         });
       });
@@ -409,13 +604,25 @@ export function App() {
 
   const rows = useMemo(
     () =>
-      snapshots.map((s) => (
+      visibleSnapshots.map((s) => (
         <div
           key={s.id}
-          className="flex items-center gap-1.5 rounded-lg border border-white/5 bg-[#313244] p-2"
+          className={`flex items-center gap-2 rounded-lg border bg-[#313244] p-2 ${s.id === activeId ? "border-[#89b4fa]/50" : "border-white/5"}`}
         >
+          <div className="h-[44px] w-[70px] shrink-0 overflow-hidden rounded-md bg-white/90">
+            {thumbs[s.id] && (
+              <img
+                src={thumbs[s.id]}
+                alt=""
+                className="size-full object-cover"
+                draggable={false}
+              />
+            )}
+          </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate font-medium text-[#f5c2e7]">{s.label}</div>
+            <div className="truncate font-medium text-[#f5c2e7]" title={s.label}>
+              {s.label}
+            </div>
             <div className="mt-0.5 text-[11px] text-[#6c7086]">
               {formatWhen(s.updatedAt)}
               {s.imageCount > 0 && ` · ${plural(s.imageCount, "image")}`}
@@ -441,7 +648,7 @@ export function App() {
           </div>
         </div>
       )),
-    [busy, snapshots, handleDelete, handleRestore],
+    [activeId, busy, visibleSnapshots, thumbs, handleDelete, handleRestore],
   );
 
   return (
@@ -451,10 +658,10 @@ export function App() {
     >
       <button
         type="button"
-        className="size-12 shrink-0 cursor-grab touch-none select-none rounded-full border-0 bg-transparent p-0 shadow-[0_4px_16px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.12)] transition-all duration-150 ease-out hover:scale-105 hover:shadow-[0_6px_20px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.18)] active:cursor-grabbing active:scale-[0.97]"
+        className="relative size-12 shrink-0 cursor-grab touch-none select-none rounded-full border-0 bg-transparent p-0 shadow-[0_4px_16px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.12)] transition-all duration-150 ease-out hover:scale-105 hover:shadow-[0_6px_20px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.18)] active:cursor-grabbing active:scale-[0.97]"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        title="Drag to move · Click to open or close"
+        title={`Drag to move · Click to open or close${isDirty ? ` · Unsaved changes, ${SHORTCUT_LABEL} to save` : ""}`}
         onPointerDown={(e) =>
           startDrag(e, { onClickIfStill: () => setOpen((v) => !v) })
         }
@@ -478,10 +685,25 @@ export function App() {
             </defs>
           </svg>
         </span>
+        {isDirty && (
+          <span
+            data-testid="unsaved-dot"
+            className="absolute right-0 top-0 size-3 rounded-full border-2 border-[#1e1e2e] bg-[#f9e2af]"
+            aria-hidden
+          />
+        )}
       </button>
+      {flash && !open && (
+        <div
+          role="status"
+          className={`max-w-[260px] rounded-lg bg-[#1e1e2e] px-2.5 py-1.5 text-xs shadow-[0_4px_16px_rgba(0,0,0,0.35)] ${flash.tone === "error" ? "text-[#f38ba8]" : "text-[#a6e3a1]"}`}
+        >
+          {flash.text}
+        </div>
+      )}
       {open && (
         <div
-          className="flex w-[280px] max-h-[min(520px,calc(100vh-24px))] flex-col gap-2.5 rounded-[10px] bg-[#1e1e2e] p-3 text-[#cdd6f4] shadow-[0_4px_24px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.06)]"
+          className="flex w-[300px] max-h-[min(600px,calc(100vh-80px))] flex-col gap-2.5 rounded-[10px] bg-[#1e1e2e] p-3 text-[#cdd6f4] shadow-[0_4px_24px_rgba(0,0,0,0.35),0_0_0_1px_rgba(255,255,255,0.06)]"
           id={panelId}
           role="region"
           aria-label="ExcaliSave"
@@ -561,11 +783,25 @@ export function App() {
           <div className="rounded-lg bg-[#181825] px-2 py-1.5 text-[11px] leading-snug text-[#a6adc8]">
             {activeSnapshot ? (
               <>
-                Linked:{" "}
-                <span className="font-medium text-[#f5c2e7]">
-                  {activeSnapshot.label}
-                </span>
-                . Save updates this entry; Save as creates a new one.
+                <div className="flex items-center gap-1.5">
+                  <span className="min-w-0 truncate">
+                    Linked:{" "}
+                    <span className="font-medium text-[#f5c2e7]">
+                      {activeSnapshot.label}
+                    </span>
+                  </span>
+                  {isDirty ? (
+                    <span className="shrink-0 rounded bg-[rgba(249,226,175,0.12)] px-1.5 py-px font-medium text-[#f9e2af]">
+                      Unsaved
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-[#a6e3a1]">Saved</span>
+                  )}
+                </div>
+                <div className="mt-0.5">
+                  Save ({SHORTCUT_LABEL}) updates it; Save as creates a new one.
+                  {lastAutosave !== null && ` Autosaved ${formatTime(lastAutosave)}.`}
+                </div>
               </>
             ) : (
               <>
@@ -637,12 +873,39 @@ export function App() {
           </div>
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <div className="mb-1.5 text-[11px] uppercase tracking-wider text-[#a6adc8]">
-              Saved
+              Saved{snapshots.length > 0 && ` (${snapshots.length})`}
             </div>
+            {snapshots.length > 1 && (
+              <div className="mb-1.5 flex gap-1.5">
+                <input
+                  type="search"
+                  aria-label="Search saves"
+                  placeholder="Search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  className="box-border min-w-0 flex-1 rounded-md border border-white/10 bg-[#181825] px-2 py-1.5 text-[12px] text-[#cdd6f4] outline-none placeholder:text-[#6c7086] focus:border-[#89b4fa]"
+                  autoComplete="off"
+                />
+                <select
+                  aria-label="Sort saves"
+                  value={prefs.sort}
+                  onChange={(e) => updatePrefs({ sort: e.target.value as SortOrder })}
+                  className="cursor-pointer rounded-md border border-white/10 bg-[#181825] px-1.5 py-1.5 text-[12px] text-[#cdd6f4] outline-none focus:border-[#89b4fa]"
+                >
+                  <option value="updated">Recent</option>
+                  <option value="created">Created</option>
+                  <option value="name">Name</option>
+                </select>
+              </div>
+            )}
             <div className={listScroll}>
               {snapshots.length === 0 ? (
                 <div className="px-1 py-2 text-center text-xs text-[#6c7086]">
                   {loaded ? "No saves yet." : "Loading..."}
+                </div>
+              ) : visibleSnapshots.length === 0 ? (
+                <div className="px-1 py-2 text-center text-xs text-[#6c7086]">
+                  No saves match "{query.trim()}".
                 </div>
               ) : (
                 rows
@@ -693,6 +956,25 @@ export function App() {
               onChange={handleImportFile}
             />
           </div>
+          <label className="flex items-center justify-between gap-2 text-[12px] text-[#a6adc8]">
+            <span title="Saves the linked file in the background when it has unsaved changes">
+              Autosave linked file
+            </span>
+            <select
+              aria-label="Autosave"
+              value={prefs.autosaveMinutes}
+              onChange={(e) =>
+                updatePrefs({ autosaveMinutes: Number(e.target.value) as AutosaveMinutes })
+              }
+              className="cursor-pointer rounded-md border border-white/10 bg-[#181825] px-1.5 py-1 text-[12px] text-[#cdd6f4] outline-none focus:border-[#89b4fa]"
+            >
+              {AUTOSAVE_CHOICES.map((m) => (
+                <option key={m} value={m}>
+                  {m === 0 ? "Off" : `Every ${m} min`}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       )}
     </div>
