@@ -6,22 +6,59 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { GITHUB_REPO_URL } from "../constants";
 import {
-  addSnapshot,
-  clearExcalidrawCanvas,
-  getActiveSnapshot,
-  getExcalidrawRaw,
-  listSnapshots,
-  removeSnapshot,
-  restoreSnapshot,
+  clearCanvas,
+  currentFingerprint,
+  getActiveSnapshotId,
+  readCanvas,
   setActiveSnapshotId,
+  writeCanvas,
+} from "../lib/excalidraw";
+import {
+  countMissingImages,
+  createSnapshot,
+  deleteSnapshot,
+  exportAll,
+  getSnapshotData,
+  importAll,
+  listSnapshots,
+  migrateLegacySnapshots,
+  onSnapshotsChanged,
+  restoreDeleted,
   updateSnapshot,
-  type Snapshot,
+  type DeletedSnapshot,
+  type SnapshotMeta,
 } from "../lib/storage";
+
+const UNDO_MS = 8000;
+
+type Confirm = { message: string; confirmLabel: string; run: () => void };
+type Undo = { deleted: DeletedSnapshot; wasActive: boolean };
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function downloadJson(filename: string, value: unknown): void {
+  const blob = new Blob([JSON.stringify(value)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -66,17 +103,96 @@ export function App() {
   const fabGradId = useId().replace(/:/g, "");
   const hostRef = useRef<HTMLDivElement | null>(null);
   const saveNameInputRef = useRef<HTMLInputElement | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const undoTimerRef = useRef<number | undefined>(undefined);
   const [pos, setPos] = useState({ right: 12, top: 12 });
   const [open, setOpen] = useState(false);
-  const [snapshots, setSnapshots] = useState<Snapshot[]>(() =>
-    listSnapshots(),
+  const [snapshots, setSnapshots] = useState<SnapshotMeta[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(() =>
+    getActiveSnapshotId(),
   );
   const [saveName, setSaveName] = useState("");
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [undo, setUndo] = useState<Undo | null>(null);
 
   const activeSnapshot = useMemo(
-    () => getActiveSnapshot(),
-    [snapshots],
+    () => snapshots.find((s) => s.id === activeId) ?? null,
+    [snapshots, activeId],
+  );
+
+  const linkActive = useCallback((id: string | null) => {
+    setActiveSnapshotId(id);
+    setActiveId(id);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await listSnapshots();
+      setSnapshots(list);
+      setLoaded(true);
+      const id = getActiveSnapshotId();
+      if (id && !list.some((s) => s.id === id)) linkActive(null);
+    } catch (err) {
+      setError(errorText(err));
+    }
+  }, [linkActive]);
+
+  useEffect(() => {
+    let cancelled = false;
+    migrateLegacySnapshots()
+      .then((moved) => {
+        if (!cancelled && moved > 0) {
+          setNotice(`Moved ${plural(moved, "save")} to extension storage.`);
+        }
+      })
+      .catch((err) => !cancelled && setError(errorText(err)))
+      .finally(() => !cancelled && void refresh());
+    const unsubscribe = onSnapshotsChanged(() => void refresh());
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [refresh]);
+
+  useEffect(() => () => window.clearTimeout(undoTimerRef.current), []);
+
+  const run = useCallback(async (task: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await task();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const hasUnsavedChanges = useCallback((): boolean => {
+    const now = currentFingerprint();
+    return activeSnapshot ? now !== activeSnapshot.fingerprint : now !== "";
+  }, [activeSnapshot]);
+
+  const guardUnsaved = useCallback(
+    (confirmLabel: string, action: () => void) => {
+      if (!hasUnsavedChanges()) {
+        action();
+        return;
+      }
+      setConfirm({
+        message: activeSnapshot
+          ? `"${activeSnapshot.label}" has unsaved changes. They will be lost.`
+          : "This canvas is not saved. It will be lost.",
+        confirmLabel,
+        run: action,
+      });
+    },
+    [activeSnapshot, hasUnsavedChanges],
   );
 
   useLayoutEffect(() => {
@@ -91,10 +207,6 @@ export function App() {
       h.style.zIndex = "2147483646";
     }
   }, [pos]);
-
-  const refresh = useCallback(() => {
-    setSnapshots(listSnapshots());
-  }, []);
 
   const startDrag = useCallback(
     (e: ReactPointerEvent, opts?: { onClickIfStill?: () => void }) => {
@@ -152,78 +264,147 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!open) return;
-    setSaveError(null);
+    if (!open) {
+      setConfirm(null);
+      return;
+    }
+    setError(null);
     queueMicrotask(() => saveNameInputRef.current?.focus());
   }, [open]);
 
   const handleNew = useCallback(() => {
-    clearExcalidrawCanvas();
-    window.location.reload();
-  }, []);
+    guardUnsaved("Discard and start new", () => {
+      clearCanvas();
+      window.location.reload();
+    });
+  }, [guardUnsaved]);
+
+  const savedNotice = (label: string, missing: number) =>
+    missing > 0
+      ? `Saved "${label}", but ${plural(missing, "image")} were not ready yet. Save again in a moment.`
+      : `Saved "${label}".`;
 
   const handleSaveUpdate = useCallback(() => {
-    const raw = getExcalidrawRaw();
-    if (raw === null || raw === "") {
-      setSaveError("Nothing to save: canvas storage is empty.");
-      return;
-    }
-    const active = getActiveSnapshot();
-    if (!active) {
-      setSaveError("No file is linked. Use Save as to create one.");
-      return;
-    }
-    setSaveError(null);
-    const name = saveName.trim();
-    const ok = updateSnapshot(
-      active.id,
-      raw,
-      name !== "" ? name : undefined,
-    );
-    if (!ok) {
-      setSaveError("Could not update: that file no longer exists.");
-      refresh();
-      return;
-    }
-    setSaveName("");
-    refresh();
-  }, [refresh, saveName]);
+    void run(async () => {
+      if (!activeSnapshot) {
+        setError("No file is linked. Use Save as to create one.");
+        return;
+      }
+      const data = await readCanvas();
+      if (!data) {
+        setError("Nothing to save: the canvas is empty.");
+        return;
+      }
+      const meta = await updateSnapshot(activeSnapshot.id, data, saveName);
+      if (!meta) {
+        setError("Could not save: that file no longer exists.");
+        linkActive(null);
+        await refresh();
+        return;
+      }
+      setSaveName("");
+      await refresh();
+      setNotice(savedNotice(meta.label, countMissingImages(data)));
+    });
+  }, [activeSnapshot, linkActive, refresh, run, saveName]);
 
   const handleSaveAs = useCallback(() => {
-    const raw = getExcalidrawRaw();
-    if (raw === null || raw === "") {
-      setSaveError("Nothing to save: canvas storage is empty.");
-      return;
-    }
-    setSaveError(null);
-    const fallback = defaultSaveLabel();
-    const label = saveName.trim() || fallback;
-    addSnapshot(label, raw);
-    setSaveName("");
-    refresh();
-  }, [refresh, saveName]);
+    void run(async () => {
+      const data = await readCanvas();
+      if (!data) {
+        setError("Nothing to save: the canvas is empty.");
+        return;
+      }
+      const meta = await createSnapshot(saveName.trim() || defaultSaveLabel(), data);
+      setSaveName("");
+      await refresh();
+      linkActive(meta.id);
+      setNotice(savedNotice(meta.label, countMissingImages(data)));
+    });
+  }, [linkActive, refresh, run, saveName]);
 
-  const handleRestore = useCallback((snap: Snapshot) => {
-    setActiveSnapshotId(snap.id);
-    restoreSnapshot(snap.data);
-    window.location.reload();
-  }, []);
+  const handleRestore = useCallback(
+    (snap: SnapshotMeta) => {
+      guardUnsaved("Discard and restore", () => {
+        void run(async () => {
+          const data = await getSnapshotData(snap.id);
+          if (!data) {
+            setError(`Could not restore "${snap.label}": its data is missing.`);
+            return;
+          }
+          await writeCanvas(data);
+          linkActive(snap.id);
+          window.location.reload();
+        });
+      });
+    },
+    [guardUnsaved, linkActive, run],
+  );
 
   const handleDelete = useCallback(
-    (id: string) => {
-      removeSnapshot(id);
-      refresh();
+    (snap: SnapshotMeta) => {
+      void run(async () => {
+        const deleted = await deleteSnapshot(snap.id);
+        if (!deleted) return;
+        const wasActive = snap.id === activeId;
+        if (wasActive) linkActive(null);
+        await refresh();
+        window.clearTimeout(undoTimerRef.current);
+        setUndo({ deleted, wasActive });
+        undoTimerRef.current = window.setTimeout(() => setUndo(null), UNDO_MS);
+      });
     },
-    [refresh],
+    [activeId, linkActive, refresh, run],
+  );
+
+  const handleUndo = useCallback(() => {
+    if (!undo) return;
+    window.clearTimeout(undoTimerRef.current);
+    setUndo(null);
+    void run(async () => {
+      await restoreDeleted(undo.deleted);
+      await refresh();
+      if (undo.wasActive) linkActive(undo.deleted.meta.id);
+    });
+  }, [linkActive, refresh, run, undo]);
+
+  const handleExport = useCallback(() => {
+    void run(async () => {
+      const backup = await exportAll();
+      if (backup.snapshots.length === 0) {
+        setError("Nothing to export yet.");
+        return;
+      }
+      const day = new Date().toISOString().slice(0, 10);
+      downloadJson(`excalisave-backup-${day}.json`, backup);
+      setNotice(`Exported ${plural(backup.snapshots.length, "save")}.`);
+    });
+  }, [run]);
+
+  const handleImportFile = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      void run(async () => {
+        const { added, skipped } = await importAll(await file.text());
+        await refresh();
+        setNotice(
+          `Imported ${plural(added, "save")}` +
+            (skipped > 0 ? `, skipped ${skipped} already present or invalid.` : "."),
+        );
+      });
+    },
+    [refresh, run],
   );
 
   const onSaveNameKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLInputElement>) => {
-      if (e.key !== "Enter") return;
+      if (e.key !== "Enter" || busy) return;
       if (activeSnapshot) handleSaveUpdate();
       else handleSaveAs();
     },
-    [activeSnapshot, handleSaveAs, handleSaveUpdate],
+    [activeSnapshot, busy, handleSaveAs, handleSaveUpdate],
   );
 
   const rows = useMemo(
@@ -236,28 +417,31 @@ export function App() {
           <div className="min-w-0 flex-1">
             <div className="truncate font-medium text-[#f5c2e7]">{s.label}</div>
             <div className="mt-0.5 text-[11px] text-[#6c7086]">
-              {formatWhen(s.createdAt)}
+              {formatWhen(s.updatedAt)}
+              {s.imageCount > 0 && ` · ${plural(s.imageCount, "image")}`}
             </div>
           </div>
           <div className="flex flex-col gap-1">
             <button
               type="button"
-              className="cursor-pointer rounded-md border-0 bg-[#a6e3a1] px-2 py-1 text-[11px] font-semibold text-[#11111b] hover:bg-[#b8f2b3]"
+              disabled={busy}
+              className="cursor-pointer rounded-md border-0 bg-[#a6e3a1] px-2 py-1 text-[11px] font-semibold text-[#11111b] hover:bg-[#b8f2b3] disabled:cursor-not-allowed disabled:opacity-40"
               onClick={() => handleRestore(s)}
             >
               Restore
             </button>
             <button
               type="button"
-              className="cursor-pointer rounded-md border border-[rgba(243,139,168,0.35)] bg-transparent px-2 py-1 text-[11px] font-semibold text-[#f38ba8] hover:bg-[rgba(243,139,168,0.12)]"
-              onClick={() => handleDelete(s.id)}
+              disabled={busy}
+              className="cursor-pointer rounded-md border border-[rgba(243,139,168,0.35)] bg-transparent px-2 py-1 text-[11px] font-semibold text-[#f38ba8] hover:bg-[rgba(243,139,168,0.12)] disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => handleDelete(s)}
             >
               Delete
             </button>
           </div>
         </div>
       )),
-    [snapshots, handleDelete, handleRestore],
+    [busy, snapshots, handleDelete, handleRestore],
   );
 
   return (
@@ -338,12 +522,42 @@ export function App() {
           <div className="flex gap-2">
             <button
               type="button"
-              className="w-full cursor-pointer rounded-lg border-0 bg-[#45475a] px-2.5 py-2 text-[13px] font-semibold text-[#f5e0dc] transition-all hover:bg-[#585b70] active:scale-[0.98]"
+              disabled={busy}
+              className="w-full cursor-pointer rounded-lg border-0 bg-[#45475a] px-2.5 py-2 text-[13px] font-semibold text-[#f5e0dc] transition-all hover:bg-[#585b70] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
               onClick={handleNew}
             >
               New
             </button>
           </div>
+          {confirm && (
+            <div
+              role="alertdialog"
+              aria-label="Unsaved changes"
+              className="flex flex-col gap-2 rounded-lg border border-[rgba(249,226,175,0.35)] bg-[rgba(249,226,175,0.08)] p-2 text-xs text-[#f9e2af]"
+            >
+              <p className="m-0">{confirm.message}</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="flex-1 cursor-pointer rounded-md border-0 bg-[#f38ba8] px-2 py-1.5 text-[12px] font-semibold text-[#11111b] hover:bg-[#f5a3ba]"
+                  onClick={() => {
+                    const action = confirm.run;
+                    setConfirm(null);
+                    action();
+                  }}
+                >
+                  {confirm.confirmLabel}
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 cursor-pointer rounded-md border border-white/15 bg-[#313244] px-2 py-1.5 text-[12px] font-semibold text-[#cdd6f4] hover:bg-[#45475a]"
+                  onClick={() => setConfirm(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           <div className="rounded-lg bg-[#181825] px-2 py-1.5 text-[11px] leading-snug text-[#a6adc8]">
             {activeSnapshot ? (
               <>
@@ -382,7 +596,7 @@ export function App() {
               value={saveName}
               onChange={(e) => {
                 setSaveName(e.target.value);
-                setSaveError(null);
+                setError(null);
               }}
               onKeyDown={onSaveNameKeyDown}
               autoComplete="off"
@@ -390,7 +604,7 @@ export function App() {
             <div className="flex gap-2">
               <button
                 type="button"
-                disabled={!activeSnapshot}
+                disabled={!activeSnapshot || busy}
                 title={
                   !activeSnapshot
                     ? "Link a file with Restore or Save as first"
@@ -403,14 +617,22 @@ export function App() {
               </button>
               <button
                 type="button"
-                className="flex-1 cursor-pointer rounded-lg border border-white/15 bg-[#313244] px-2.5 py-2 text-[13px] font-semibold text-[#cdd6f4] transition-all hover:bg-[#45475a] active:scale-[0.98]"
+                disabled={busy}
+                className="flex-1 cursor-pointer rounded-lg border border-white/15 bg-[#313244] px-2.5 py-2 text-[13px] font-semibold text-[#cdd6f4] transition-all hover:bg-[#45475a] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={handleSaveAs}
               >
                 Save as
               </button>
             </div>
-            {saveError && (
-              <p className="m-0 text-xs text-[#f38ba8]">{saveError}</p>
+            {error && (
+              <p role="alert" className="m-0 text-xs text-[#f38ba8]">
+                {error}
+              </p>
+            )}
+            {notice && !error && (
+              <p role="status" className="m-0 text-xs text-[#a6e3a1]">
+                {notice}
+              </p>
             )}
           </div>
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -420,12 +642,56 @@ export function App() {
             <div className={listScroll}>
               {snapshots.length === 0 ? (
                 <div className="px-1 py-2 text-center text-xs text-[#6c7086]">
-                  No saves yet.
+                  {loaded ? "No saves yet." : "Loading..."}
                 </div>
               ) : (
                 rows
               )}
             </div>
+          </div>
+          {undo && (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 rounded-lg bg-[#313244] px-2 py-1.5 text-xs text-[#cdd6f4]"
+            >
+              <span className="min-w-0 truncate">
+                Deleted "{undo.deleted.meta.label}"
+              </span>
+              <button
+                type="button"
+                className="shrink-0 cursor-pointer rounded-md border-0 bg-transparent px-2 py-1 text-[12px] font-semibold text-[#89b4fa] hover:bg-white/10"
+                onClick={handleUndo}
+              >
+                Undo
+              </button>
+            </div>
+          )}
+          <div className="flex gap-2 border-t border-white/5 pt-2">
+            <button
+              type="button"
+              disabled={busy}
+              className="flex-1 cursor-pointer rounded-md border border-white/10 bg-transparent px-2 py-1.5 text-[12px] font-medium text-[#a6adc8] hover:bg-white/5 hover:text-[#cdd6f4] disabled:cursor-not-allowed disabled:opacity-40"
+              title="Download every save, with images, as one JSON file"
+              onClick={handleExport}
+            >
+              Export all
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              className="flex-1 cursor-pointer rounded-md border border-white/10 bg-transparent px-2 py-1.5 text-[12px] font-medium text-[#a6adc8] hover:bg-white/5 hover:text-[#cdd6f4] disabled:cursor-not-allowed disabled:opacity-40"
+              title="Add saves from an ExcaliSave backup file"
+              onClick={() => importInputRef.current?.click()}
+            >
+              Import
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
           </div>
         </div>
       )}
