@@ -4,6 +4,8 @@ All notable changes to ExcaliSave are documented here. The format follows [Keep 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
 Nicer to use: find saves quickly, see what they are, and stop losing work between saves.
 
 ### Added
@@ -57,6 +59,7 @@ First public version.
 - **New**, **Save** and **Save as**, with Save updating the linked file
 - List of saves with **Restore** and **Delete**
 
-[Unreleased]: https://github.com/callmegautam/ExcaliSave/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/callmegautam/ExcaliSave/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/callmegautam/ExcaliSave/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/callmegautam/ExcaliSave/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/callmegautam/ExcaliSave/releases/tag/v0.0.1
