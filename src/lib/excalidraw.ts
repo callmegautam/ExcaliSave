@@ -187,8 +187,18 @@ async function writeFiles(files: Record<string, BinaryFile>): Promise<void> {
   }
 }
 
+/**
+ * Excalidraw writes the scene to localStorage on a ~300 ms debounce and flushes
+ * it immediately when the window loses focus. A synthetic blur triggers that
+ * flush so a save right after an edit (Ctrl+S) does not miss the last change.
+ */
+export function flushExcalidrawSave(): void {
+  window.dispatchEvent(new Event("blur"));
+}
+
 /** Reads everything needed to rebuild the current canvas, including images. */
 export async function readCanvas(): Promise<CanvasData | null> {
+  flushExcalidrawSave();
   const elements = readElementsRaw();
   if (elements === null || elements === "") return null;
   const files = await readFiles(referencedFileIds(elements));
@@ -201,6 +211,27 @@ export async function writeCanvas(data: CanvasData): Promise<void> {
   window.localStorage.setItem(LS_KEY_ELEMENTS, data.elements);
   if (data.appState !== null) {
     window.localStorage.setItem(LS_KEY_APP_STATE, data.appState);
+  }
+}
+
+const SS_KEY_RESTORED = "excaliSave_restoredId";
+
+/** Marks that the next page load is the result of restoring this save. */
+export function markRestored(id: string): void {
+  try {
+    window.sessionStorage.setItem(SS_KEY_RESTORED, id);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function takeRestoredMark(): string | null {
+  try {
+    const id = window.sessionStorage.getItem(SS_KEY_RESTORED);
+    window.sessionStorage.removeItem(SS_KEY_RESTORED);
+    return id;
+  } catch {
+    return null;
   }
 }
 
