@@ -1,7 +1,7 @@
 {
   "name": "excali-save",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "description": "Chrome extension for excalidraw.com: save, restore and update named canvas snapshots, images included.",
   "author": {
